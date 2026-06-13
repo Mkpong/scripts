@@ -44,23 +44,26 @@ check_os() {
     fi
 }
 
-check_nvidia_gpu() {
-    log_info "NVIDIA GPU 존재 확인..."
-    if ! lspci 2>/dev/null | grep -qi nvidia; then
-        log_error "NVIDIA GPU가 감지되지 않았습니다."
-        exit 1
-    fi
-    log_success "NVIDIA GPU 감지됨"
-}
+# ----- GPU + Driver 통합 확인 (nvidia-smi 기반) -----
+check_nvidia_gpu_driver() {
+    log_info "NVIDIA Driver 및 GPU 확인 (nvidia-smi 기반)..."
 
-check_nvidia_driver() {
-    log_info "NVIDIA Driver(nvidia-smi) 확인..."
+    # nvidia-smi 존재 확인
     if ! command -v nvidia-smi &>/dev/null; then
         log_error "nvidia-smi를 찾을 수 없습니다. NVIDIA Driver를 먼저 설치하세요."
         exit 1
     fi
+
+    # GPU 감지 확인 (실행은 되나 GPU 미감지/드라이버 비정상이면 실패)
+    if ! nvidia-smi -L &>/dev/null; then
+        log_error "nvidia-smi 실행은 되나 GPU가 감지되지 않았습니다."
+        log_error "드라이버 상태를 확인하세요: nvidia-smi"
+        exit 1
+    fi
+
+    log_success "NVIDIA GPU 및 Driver 확인 완료"
+    nvidia-smi -L
     nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
-    log_success "NVIDIA Driver 확인 완료"
 }
 
 # ----- Step 1: NVIDIA Container Toolkit 설치 -----
@@ -154,8 +157,7 @@ main() {
 
     check_root
     check_os
-    check_nvidia_gpu
-    check_nvidia_driver
+    check_nvidia_gpu_driver
 
     install_container_toolkit
     configure_runtime
