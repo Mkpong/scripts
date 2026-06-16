@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# ---- pretty output helpers ----
+info() { printf "\033[1;32m[ OK ]\033[0m %s\n" "$1"; }
+warn() { printf "\033[1;33m[WARN]\033[0m %s\n" "$1"; }
+err()  { printf "\033[1;31m[FAIL]\033[0m %s\n" "$1" >&2; }
+
 VM_NAME=""
 OS_VARIANT="ubuntu24.04"
 VCPUS="2"
@@ -45,8 +50,7 @@ while [[ "$#" -gt 0 ]]; do
 			shift 2
 			;;
 		*)
-			echo "Unknown option: $1"
-			echo "Use --help for usage information"
+			err "Unknown option: $1"
 			exit 1
 			;;
 	esac
@@ -54,13 +58,13 @@ done
 
 # Required input value Exception Handling
 if [ -z "$VM_NAME" ]; then
-	echo "Error: --name is empty. name field is a required value and must be provided."
+	err "--name is required and must be provided."
 	exit 1
 fi
 
 # If not entered cloud_init set default ubuntu folder path
 if [ -z "$CLOUD_INIT_FOLDER_PATH" ]; then
-	echo "Not entered cloud_init: set default ubuntu folder"
+	warn "--cloud-init not set: using default folder /home/boan/kvm/data/ubuntu"
 	CLOUD_INIT_FOLDER_PATH="/home/boan/kvm/data/ubuntu"
 fi
 
@@ -72,9 +76,17 @@ elif [ "$OS_VARIANT" = "ubuntu22.04" ]; then
 elif [ "$OS_VARIANT" = "ubuntu20.04" ]; then
 	OS_IMG_PATH="/var/lib/libvirt/images/focal-server-cloudimg-amd64.img"
 else
-	echo "Unsupported OS_VARIANT: ${OS_VARIANT}"
+	err "Unsupported OS_VARIANT: ${OS_VARIANT}"
 	exit 1
 fi
+
+# OS image existence check
+if [ ! -f "${OS_IMG_PATH}" ]; then
+	err "OS image not found: ${OS_IMG_PATH}"
+	printf "       \033[1;36m→ download first:\033[0m ./download-ubuntu-image.sh %s\n" "${OS_VARIANT}" >&2
+	exit 1
+fi
+info "OS image found: ${OS_IMG_PATH}"
 
 STORAGE_POOL_PATH="/mnt/data/images"
 
