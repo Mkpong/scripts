@@ -67,4 +67,4 @@ for bus in "${buses[@]}"; do
 done
 
 echo "========================================================="
-echo "미사용(사용 가능) GPU의 bus 값을 사용하세요. 예: bus=3b ./gpu-attach.sh <VM이름>"
+echo "미사용(사용 가능) GPU의 bus 값을 사용하세요. 예: bus=3b ./attach-gpu.sh <VM이름>"

@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # ---- pretty output helpers ----
 info() { printf "\033[1;32m[ OK ]\033[0m %s\n" "$1"; }
 warn() { printf "\033[1;33m[WARN]\033[0m %s\n" "$1"; }
@@ -10,10 +9,15 @@ OS_VARIANT="ubuntu24.04"
 VCPUS="2"
 RAM_SIZE="2048"
 DISK_SIZE="128"
+DISK_TYPE="ssd"   # ssd | hdd
 CLOUD_INIT_FOLDER_PATH="" # Needs meta-data, user-data, network-config file
 NETWORK="br0-net"
 OS_IMG_PATH=""
 VIRT_TYPE="qemu"
+
+# Storage path per disk type
+SSD_POOL_PATH="/var/lib/libvirt/images"
+HDD_POOL_PATH="/mnt/data/images"
 
 while [[ "$#" -gt 0 ]]; do
 	case "$1" in
@@ -27,6 +31,10 @@ while [[ "$#" -gt 0 ]]; do
 			;;
 		--disk)
 			DISK_SIZE="$2"
+			shift 2
+			;;
+		--disk-type)
+			DISK_TYPE="$2"
 			shift 2
 			;;
 		--ram)
@@ -88,7 +96,17 @@ if [ ! -f "${OS_IMG_PATH}" ]; then
 fi
 info "OS image found: ${OS_IMG_PATH}"
 
-STORAGE_POOL_PATH="/mnt/data/images"
+# Disk type check → decide storage pool path
+DISK_TYPE="$(printf '%s' "${DISK_TYPE}" | tr '[:upper:]' '[:lower:]')"
+if [ "$DISK_TYPE" = "ssd" ]; then
+	STORAGE_POOL_PATH="${SSD_POOL_PATH}"
+elif [ "$DISK_TYPE" = "hdd" ]; then
+	STORAGE_POOL_PATH="${HDD_POOL_PATH}"
+else
+	err "Unsupported DISK_TYPE: ${DISK_TYPE} (use 'ssd' or 'hdd')"
+	exit 1
+fi
+info "Disk type: ${DISK_TYPE} → ${STORAGE_POOL_PATH}"
 
 # sudo mkdir -p "/var/lib/libvirt/images/${VM_NAME}"
 sudo mkdir -p "${STORAGE_POOL_PATH}/${VM_NAME}"
@@ -96,7 +114,6 @@ sudo mkdir -p "${STORAGE_POOL_PATH}/${VM_NAME}"
 # BASE_IMG_PATH="/var/lib/libvirt/images/${VM_NAME}/${VM_NAME}-base.qcow2"
 # SEED_PATH="/var/lib/libvirt/images/${VM_NAME}/${VM_NAME}-seed.img"
 # CLOUD_INIT_BASE_PATH="/var/lib/libvirt/images/${VM_NAME}"
-
 BASE_IMG_PATH="${STORAGE_POOL_PATH}/${VM_NAME}/${VM_NAME}-base.qcow2"
 SEED_PATH="${STORAGE_POOL_PATH}/${VM_NAME}/${VM_NAME}-seed.img"
 CLOUD_INIT_BASE_PATH="${STORAGE_POOL_PATH}/${VM_NAME}"
