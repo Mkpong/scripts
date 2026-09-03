@@ -1,45 +1,59 @@
 #!/bin/bash
+###############################################################################
+# Ubuntu cloud image 다운로드 스크립트
+# - KVM VM 생성에 사용할 Ubuntu cloud image 를 /var/lib/libvirt/images 에 저장
+# - 이미 존재하는 이미지는 건너뜀
+#
+# 실행 방법: bash download-ubuntu-image.sh [VERSION ...]
+#   ./download-ubuntu-image.sh                 # 20.04, 22.04, 24.04 전부 (기본값)
+#   ./download-ubuntu-image.sh ubuntu24.04     # 24.04 만
+#   ./download-ubuntu-image.sh 22.04 24.04     # 여러 버전
+###############################################################################
 
-# Download Ubuntu cloud images for KVM VM creation.
-# Usage:
-#   ./download-ubuntu-image.sh                 # download 20.04, 22.04, 24.04 (default)
-#   ./download-ubuntu-image.sh ubuntu24.04     # download only 24.04
-#   ./download-ubuntu-image.sh 22.04 24.04     # download multiple versions
+# ----- 색상 출력 -----
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# ---- pretty output helpers ----
-info() { printf "\033[1;32m[ OK ]\033[0m %s\n" "$1"; }
-warn() { printf "\033[1;33m[SKIP]\033[0m %s\n" "$1"; }
-err()  { printf "\033[1;31m[FAIL]\033[0m %s\n" "$1" >&2; }
-step() { printf "\033[1;36m[ .. ]\033[0m %s\n" "$1"; }
+log_info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_success() { echo -e "${GREEN}[ OK ]${NC} $1"; }
+log_warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error()   { echo -e "${RED}[FAIL]${NC} $1"; }
+
+step_header() {
+	echo ""
+	echo "================================================================"
+	echo " $1"
+	echo "================================================================"
+}
 
 IMAGE_DIR="/var/lib/libvirt/images"
 BASE_URL="https://cloud-images.ubuntu.com"
 
 usage() {
-	cat <<EOF
-$(printf "\033[1;36mdownload-ubuntu-image.sh\033[0m") - Download Ubuntu cloud images for KVM
+	cat <<USAGE
+사용법: ./download-ubuntu-image.sh [VERSION ...]
 
-Usage:
-  ./download-ubuntu-image.sh [VERSION ...]
+인자:
+  VERSION    다운로드할 Ubuntu 버전. 허용 값: ubuntu24.04 | 24.04 | noble
+                                            ubuntu22.04 | 22.04 | jammy
+                                            ubuntu20.04 | 20.04 | focal
+             생략하면 지원하는 모든 버전을 다운로드합니다.
 
-Arguments:
-  VERSION    Ubuntu version to download. Accepts: ubuntu24.04 | 24.04 | noble
-                                                  ubuntu22.04 | 22.04 | jammy
-                                                  ubuntu20.04 | 20.04 | focal
-             If omitted, all supported versions are downloaded.
+옵션:
+  -h, --help   도움말 출력
 
-Options:
-  -h, --help   Show this help message and exit.
+동작:
+  - 이미 다운로드된 이미지는 건너뜁니다 (재다운로드 없음).
+  - 저장 위치: ${IMAGE_DIR}
 
-Behavior:
-  - Already-downloaded images are skipped (no re-download).
-  - Images are saved to: ${IMAGE_DIR}
-
-Examples:
-  ./download-ubuntu-image.sh                  # download 20.04, 22.04, 24.04
-  ./download-ubuntu-image.sh ubuntu24.04      # download only 24.04
-  ./download-ubuntu-image.sh 22.04 24.04      # download multiple versions
-EOF
+예시:
+  ./download-ubuntu-image.sh                  # 20.04, 22.04, 24.04 전부
+  ./download-ubuntu-image.sh ubuntu24.04      # 24.04 만
+  ./download-ubuntu-image.sh 22.04 24.04      # 여러 버전
+USAGE
 }
 
 # Map os-variant -> "codename:image-filename"
@@ -75,14 +89,20 @@ if [ "$#" -eq 0 ]; then
 	set -- ubuntu20.04 ubuntu22.04 ubuntu24.04
 fi
 
+step_header "Ubuntu cloud image 다운로드 시작"
+log_info "$(date '+%Y-%m-%d %H:%M:%S')"
+log_info "Host: $(hostname)"
+log_info "저장 위치: ${IMAGE_DIR}"
+log_info "대상 버전: $*"
+
 sudo mkdir -p "${IMAGE_DIR}"
 
 for VERSION in "$@"; do
 	INFO=$(get_image_info "${VERSION}")
 
 	if [ -z "${INFO}" ]; then
-		err "Unsupported version: ${VERSION}"
-		printf "       supported: ubuntu20.04, ubuntu22.04, ubuntu24.04\n" >&2
+		log_error "지원하지 않는 버전입니다: ${VERSION}"
+		log_info  "지원 버전: ubuntu20.04, ubuntu22.04, ubuntu24.04"
 		exit 1
 	fi
 
@@ -92,16 +112,18 @@ for VERSION in "$@"; do
 	IMG_URL="${BASE_URL}/${CODENAME}/current/${IMG_NAME}"
 
 	if [ -f "${IMG_PATH}" ]; then
-		warn "${VERSION} already exists: ${IMG_PATH}"
+		log_warn "${VERSION} 이미지가 이미 존재합니다 (건너뜀): ${IMG_PATH}"
 		continue
 	fi
 
-	step "${VERSION} downloading: ${IMG_URL}"
+	log_info "${VERSION} 다운로드: ${IMG_URL}"
 	if sudo wget -q --show-progress -O "${IMG_PATH}" "${IMG_URL}"; then
-		info "${VERSION} done: ${IMG_PATH}"
+		log_success "${VERSION} 다운로드 완료: ${IMG_PATH}"
 	else
-		err "${VERSION} download failed"
+		log_error "${VERSION} 다운로드 실패"
 		sudo rm -f "${IMG_PATH}"
 		exit 1
 	fi
 done
+
+step_header "모든 다운로드가 완료되었습니다"
