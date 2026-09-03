@@ -4,7 +4,7 @@
 # - GPU 노드에 label 부여 후 nvidia-device-plugin DaemonSet 배포
 # - nodeSelector 패치, GPU 리소스 등록 대기 및 검증
 #
-# 실행 방법: bash deploy-nvidia-device-plugin.sh --node <node-name> [--node <node-name> ...]
+# 실행 방법: bash deploy_nvidia_device_plugin.sh --node <node-name> [--node <node-name> ...]
 ###############################################################################
 
 set -e
@@ -39,21 +39,26 @@ NODES=()
 
 usage() {
 	cat <<'USAGE'
-사용법: ./deploy-nvidia-device-plugin.sh --node <node-name> [--node <node-name> ...]
+사용법: ./deploy_nvidia_device_plugin.sh --node <node-name> [--node <node-name> ...]
 
 옵션:
   --node <name>    label 을 부여하고 plugin 을 배포할 GPU 노드 (반복 지정 가능, 필수)
   -h, --help       도움말 출력
 
 예시:
-  ./deploy-nvidia-device-plugin.sh --node dku-mlops-worker
-  ./deploy-nvidia-device-plugin.sh --node worker1 --node worker2
+  ./deploy_nvidia_device_plugin.sh --node dku-mlops-worker
+  ./deploy_nvidia_device_plugin.sh --node worker1 --node worker2
 USAGE
 }
 
 while [[ "$#" -gt 0 ]]; do
 	case "$1" in
 		--node)
+			if [ -z "${2:-}" ]; then
+				log_error "--node 옵션에 노드 이름이 필요합니다."
+				usage
+				exit 1
+			fi
 			NODES+=("$2")
 			shift 2
 			;;
@@ -148,16 +153,22 @@ kubectl -n "${NAMESPACE}" patch daemonset "${DS_NAME}" \
 
 # ---- Step 4: wait for rollout + GPU registration ----
 step_header "Step 4/5: rollout 및 GPU 리소스 등록 대기"
-log_info "DaemonSet rollout 대기..."
-kubectl -n "${NAMESPACE}" rollout status daemonset "${DS_NAME}" --timeout=180s
-
-log_info "GPU 리소스 등록 대기..."
+# rollout 실패(대개 nvidia 런타임 미등록 → CrashLoopBackOff)해도 Step 5 의 진단 안내까지 진행되도록 set -e 에서 제외
 GPU_READY=1
-if wait_for_gpu; then
-	log_success "GPU 리소스 등록 완료"
-else
+log_info "DaemonSet rollout 대기..."
+if ! kubectl -n "${NAMESPACE}" rollout status daemonset "${DS_NAME}" --timeout=180s; then
 	GPU_READY=0
-	log_warn "${GPU_WAIT_TIMEOUT}초 내에 GPU 리소스가 등록되지 않았습니다."
+	log_warn "DaemonSet rollout 이 180초 내에 완료되지 않았습니다."
+fi
+
+if [ "${GPU_READY}" -eq 1 ]; then
+	log_info "GPU 리소스 등록 대기..."
+	if wait_for_gpu; then
+		log_success "GPU 리소스 등록 완료"
+	else
+		GPU_READY=0
+		log_warn "${GPU_WAIT_TIMEOUT}초 내에 GPU 리소스가 등록되지 않았습니다."
+	fi
 fi
 
 # ---- Step 5: verify ----
