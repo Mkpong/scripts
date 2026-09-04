@@ -251,9 +251,7 @@ PYEDIT
 		echo "  bridges:"
 		echo "    ${BRIDGE}:"
 		echo "      interfaces: [${NIC}]"
-		echo "      parameters:"
-		echo "        stp: false"
-		echo "        forward-delay: 0"
+		# parameters:(stp/forward-delay) 는 넣지 않음 — 있으면 'netplan try' 가 원복 불가라며 실행을 거부함
 		if [ "${IP_MODE}" = "dhcp" ]; then
 			echo "      dhcp4: yes"
 		else
@@ -284,7 +282,9 @@ PYEDIT
 	if sudo netplan try --timeout 120; then
 		log_success "netplan 적용 완료"
 	else
-		log_error "netplan try 가 확정되지 않았거나 실패했습니다 (원복됨). 백업: ${BACKUP_DIR}"
+		log_error "netplan try 가 확정되지 않았거나 실패했습니다."
+		log_info  "설정 파일은 작성된 상태입니다: ${NETPLAN_FILE} (원본 백업: ${BACKUP_DIR})"
+		log_info  "내용을 확인한 뒤 직접 적용하려면:  sudo netplan apply    /  되돌리려면:  sudo cp ${BACKUP_DIR}/*.yaml ${NETPLAN_DIR}/ && sudo rm ${NETPLAN_FILE}"
 		exit 1
 	fi
 fi
