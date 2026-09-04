@@ -91,11 +91,17 @@ SYS_IOMMU="/sys/kernel/iommu_groups"
 collect_gpus() {
 	GPU_BUSES=(); GPU_NAMES=(); GPU_FUNCS=(); GPU_DRIVERS=(); GPU_GROUP=(); GPU_OTHERS=()
 	local line addr bus name i
+	SMI_NAMES=$(nvidia-smi --query-gpu=pci.bus_id,name --format=csv,noheader 2>/dev/null | sed 's/^0000//' || true)
 	while IFS= read -r line; do
 		[ -z "$line" ] && continue
 		addr="${line%% *}"                       # 0000:3b:00.0
 		bus="${addr%:*}"                         # 0000:3b   (마지막 :slot.func 제거)
 		name=$(echo "$line" | sed -E 's/^[^ ]+ [^:]+: //; s/ \[10de:[0-9a-f]+\].*//; s/NVIDIA Corporation //')
+		if [ -z "$name" ] || [ "$name" = "Device" ]; then
+			# pci.ids 가 오래되면 lspci 는 모델명을 모름 → nvidia-smi(호스트 드라이버 GPU 만) → PCI ID
+			name=$(echo "${SMI_NAMES}" | awk -F', ' -v a="$(echo "${addr#0000:}" | tr 'a-f' 'A-F')" 'toupper($1) ~ a"$" {print $2}' | head -n1)
+			[ -z "$name" ] && name="Device $(echo "$line" | grep -oE '\[10de:[0-9a-f]+\]' | head -n1 | tr -d '[]')"
+		fi
 		for i in "${!GPU_BUSES[@]}"; do
 			if [ "${GPU_BUSES[i]}" = "$bus" ]; then
 				GPU_FUNCS[i]="${GPU_FUNCS[i]} ${addr}"
@@ -262,9 +268,17 @@ if [ "$MODE" -eq 0 ]; then
 	fi
 	if [ "${#GPU_BUSES[@]}" -eq 0 ]; then log_error "연결할 NVIDIA GPU 가 없습니다."; exit 1; fi
 
-	# 1. GPU
+	# 1. GPU — 선택 가능한 것이 하나도 없으면 메뉴로 들어가지 않음
+	SELECTABLE=0
+	for i in "${!GPU_SELECTABLE[@]}"; do [ "${GPU_SELECTABLE[i]}" -eq 1 ] && SELECTABLE=$((SELECTABLE + 1)); done
+	if [ "${SELECTABLE}" -eq 0 ]; then
+		echo
+		log_error "연결 가능한 GPU 가 없습니다. 모든 GPU 를 실행 중인 VM 이 사용하고 있습니다."
+		log_info  "해당 VM 을 종료하거나, 'GPU 해제 (detach)' 로 먼저 해제하세요."
+		exit 1
+	fi
 	echo
-	log_info "연결할 GPU 를 선택하세요"
+	log_info "연결할 GPU 를 선택하세요  (선택 가능: ${SELECTABLE}개)"
 	while true; do
 		select_menu "${GPU_LABELS[@]}"
 		G=$MENU_SELECTED
