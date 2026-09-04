@@ -298,6 +298,7 @@ else
 	CI_IP_MODE="dhcp"
 fi
 # virt-install 기본(q35 + virtio-net)에서 게스트 NIC 이름은 enp1s0
+log_info "게스트 NIC 이름은 VM 안에서 보이는 인터페이스명입니다. 기본 구성(q35 + virtio)이면 enp1s0 — 모르면 Enter"
 ask_text "게스트 NIC 이름" "enp1s0";  CI_NIC="${ASK_RESULT}"
 
 echo
