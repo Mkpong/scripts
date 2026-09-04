@@ -161,17 +161,36 @@ select_menu "${OS_LABELS[@]}"
 OS_VARIANT="${OS_VARIANTS[$MENU_SELECTED]}"
 OS_IMG_PATH="${OS_IMAGES[$MENU_SELECTED]}"
 
-# OS image existence check
+# OS image existence check → 없으면 download-ubuntu-image.sh 로 바로 다운로드
 if [ ! -f "${OS_IMG_PATH}" ]; then
-	log_error "OS 이미지를 찾을 수 없습니다: ${OS_IMG_PATH}"
-	log_info  "먼저 다운로드하세요: ./download-ubuntu-image.sh ${OS_VARIANT}"
-	exit 1
+	SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	DOWNLOAD_SCRIPT="${SCRIPT_DIR}/download-ubuntu-image.sh"
+	log_warn "OS 이미지가 없습니다: ${OS_IMG_PATH}"
+	if [ ! -x "${DOWNLOAD_SCRIPT}" ]; then
+		log_error "다운로드 스크립트를 찾을 수 없습니다: ${DOWNLOAD_SCRIPT}"
+		exit 1
+	fi
+	read -rp "$(echo -e "${BLUE}[INFO]${NC} 지금 다운로드할까요? (download-ubuntu-image.sh ${OS_VARIANT}) [Y/n] ")" DL_CONFIRM
+	case "${DL_CONFIRM}" in
+		""|[Yy]*) ;;
+		*) log_warn "취소했습니다."; exit 1 ;;
+	esac
+	if ! "${DOWNLOAD_SCRIPT}" "${OS_VARIANT}"; then
+		log_error "이미지 다운로드에 실패했습니다."
+		exit 1
+	fi
+	if [ ! -f "${OS_IMG_PATH}" ]; then
+		log_error "다운로드 후에도 이미지가 없습니다: ${OS_IMG_PATH}"
+		exit 1
+	fi
+	echo
 fi
 log_success "OS 이미지 확인: ${OS_IMG_PATH}"
 
 # 호스트 osinfo-db 가 이 os-variant 를 아는지 확인 (모르면 virt-install 이 "Unknown OS name" 으로 실패)
 if command -v virt-install >/dev/null 2>&1; then
-	if ! virt-install --osinfo list 2>/dev/null | grep -qx "${OS_VARIANT}"; then
+	# 출력 형식: "ubuntu24.04, ubuntunoble" (한 줄에 별칭까지) → 쉼표로 나눠 정확히 일치하는 항목 검사
+	if ! virt-install --osinfo list 2>/dev/null | tr ',' '\n' | sed 's/^[[:space:]]*//' | grep -qx "${OS_VARIANT}"; then
 		log_error "이 호스트의 osinfo-db 가 '${OS_VARIANT}' 를 인식하지 못합니다."
 		log_info  "업데이트 후 재실행하세요:  sudo apt install -y osinfo-db   또는   sudo osinfo-db-import --latest"
 		exit 1
