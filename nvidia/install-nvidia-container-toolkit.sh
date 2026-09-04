@@ -4,7 +4,8 @@
 # - Container에서 GPU를 사용하기 위한 toolkit 설치 (Worker Node)
 # - Ubuntu/Debian 환경 기준
 #
-# 실행 방법: sudo bash install-nvidia-container-toolkit.sh
+# 실행 방법: bash install-nvidia-container-toolkit.sh                 (필요한 곳에서 sudo 요청)
+#           EXPERIMENTAL=1 bash install-nvidia-container-toolkit.sh  (experimental 채널 포함)
 ###############################################################################
 
 set -euo pipefail  # 에러 발생/미정의 변수/파이프 에러 시 즉시 종료
@@ -29,11 +30,16 @@ step_header() {
 }
 
 # ----- 사전 점검 -----
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        log_error "이 스크립트는 root 권한으로 실행해야 합니다."
-        log_info  "실행 예: sudo bash $0"
-        exit 1
+check_sudo() {
+    if [[ $EUID -eq 0 ]]; then
+        log_info "root 로 실행 중 — sudo 없이 진행합니다."
+        SUDO=""
+    else
+        SUDO="sudo"
+        if ! sudo -v; then
+            log_error "sudo 권한이 필요합니다."
+            exit 1
+        fi
     fi
 }
 
@@ -76,21 +82,25 @@ install_container_toolkit() {
     fi
 
     log_info "GPG 키 등록..."
-    install -d -m 0755 /usr/share/keyrings
+    ${SUDO} install -d -m 0755 /usr/share/keyrings
     curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-        | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        | ${SUDO} gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
 
     log_info "APT repository 등록..."
     curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
         | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-        | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+        | ${SUDO} tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
 
-    log_info "Experimental 채널 활성화..."
-    sed -i -e '/experimental/ s/^#//g' /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    if [[ "${EXPERIMENTAL:-0}" == "1" ]]; then
+        log_warn "Experimental 채널 활성화 (EXPERIMENTAL=1) — stable 보다 높은 버전의 실험 패키지가 설치될 수 있습니다."
+        ${SUDO} sed -i -e '/experimental/ s/^#//g' /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    else
+        log_info "stable 채널만 사용 (experimental 포함: EXPERIMENTAL=1)"
+    fi
 
     log_info "패키지 업데이트 및 설치..."
-    apt-get update -y
-    apt-get install -y nvidia-container-toolkit
+    ${SUDO} apt-get update -y
+    ${SUDO} apt-get install -y nvidia-container-toolkit
 
     log_success "NVIDIA Container Toolkit 설치 완료"
     nvidia-ctk --version || true
@@ -103,8 +113,8 @@ configure_runtime() {
     # Docker
     if command -v docker &>/dev/null; then
         log_info "Docker runtime 설정..."
-        nvidia-ctk runtime configure --runtime=docker
-        systemctl restart docker
+        ${SUDO} nvidia-ctk runtime configure --runtime=docker
+        ${SUDO} systemctl restart docker
         log_success "Docker runtime 설정 완료"
     else
         log_warn "Docker 미설치 - Docker 설정 건너뜀"
@@ -113,8 +123,8 @@ configure_runtime() {
     # Containerd
     if command -v containerd &>/dev/null; then
         log_info "Containerd runtime 설정 (default runtime = nvidia)..."
-        nvidia-ctk runtime configure --runtime=containerd --set-as-default
-        systemctl restart containerd
+        ${SUDO} nvidia-ctk runtime configure --runtime=containerd --set-as-default
+        ${SUDO} systemctl restart containerd
         log_success "Containerd runtime 설정 완료"
     else
         log_warn "Containerd 미설치 - Containerd 설정 건너뜀"
@@ -133,13 +143,13 @@ test_gpu_in_container() {
     local CUDA_IMAGE="docker.io/nvidia/cuda:11.8.0-base-ubuntu22.04"
 
     log_info "Containerd 재시작..."
-    systemctl restart containerd
+    ${SUDO} systemctl restart containerd
 
     log_info "CUDA 베이스 이미지 pull: ${CUDA_IMAGE}"
-    ctr image pull "${CUDA_IMAGE}"
+    ${SUDO} ctr image pull "${CUDA_IMAGE}"
 
     log_info "컨테이너 내부에서 nvidia-smi 실행..."
-    ctr run --rm -t \
+    ${SUDO} ctr run --rm -t \
         --runc-binary=/usr/bin/nvidia-container-runtime \
         --env NVIDIA_VISIBLE_DEVICES=all \
         "${CUDA_IMAGE}" \
@@ -155,7 +165,7 @@ main() {
     log_info "$(date '+%Y-%m-%d %H:%M:%S')"
     log_info "Host: $(hostname)"
 
-    check_root
+    check_sudo
     check_os
     check_nvidia_gpu_driver
 
