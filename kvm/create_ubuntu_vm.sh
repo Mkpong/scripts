@@ -6,7 +6,14 @@
 #
 # 실행 방법: bash create_ubuntu_vm.sh   → 항목을 차례로 입력/선택 (터미널 필요)
 #   VM 이름 / OS 버전 / vCPU / RAM / 디스크 크기 / 디스크 타입 / cloud-init 폴더 / 네트워크 / virt-type
+#
+# 주의
+# - cloud-init 폴더는 VM 마다 별도로 준비 (meta-data 의 호스트명, network-config 의 IP 가 들어 있으므로 공용 사용 금지)
+# - VM 디스크는 /var/lib/libvirt/images 의 원본 cloud image 를 backing file 로 참조함.
+#   원본을 삭제/교체하면 그 이미지로 만든 VM 전부가 손상되므로 원본은 건드리지 말 것
 ###############################################################################
+
+set -e
 
 # ----- 색상 출력 -----
 RED='\033[0;31m'
@@ -27,8 +34,17 @@ step_header() {
 	echo "================================================================"
 }
 
-# ----- 종료 시 커서 복원 -----
-trap 'tput cnorm 2>/dev/null || true' EXIT
+# ----- 종료 시 정리: 커서 복원 + 실패 시 이번 실행에서 만든 VM 디렉터리 삭제 -----
+CREATED_VM_DIR=""      # Step 시작 시 설정, 성공 완료 시 비움
+cleanup() {
+	local rc=$?
+	tput cnorm 2>/dev/null || true
+	if [ "${rc}" -ne 0 ] && [ -n "${CREATED_VM_DIR}" ] && [ -d "${CREATED_VM_DIR}" ]; then
+		log_warn "실패로 종료 — 생성 중이던 디렉터리를 정리합니다: ${CREATED_VM_DIR}"
+		sudo rm -rf "${CREATED_VM_DIR}"
+	fi
+}
+trap cleanup EXIT
 
 # ----- 화살표 선택 메뉴 -----
 # 사용: select_menu "항목1" "항목2" ...  → 선택한 인덱스(0부터)가 MENU_SELECTED 에 저장. q 면 종료
@@ -102,17 +118,25 @@ fi
 # Storage path per disk type
 SSD_POOL_PATH="/var/lib/libvirt/images"
 HDD_POOL_PATH="/mnt/data/images"
-DEFAULT_CLOUD_INIT_FOLDER_PATH="/home/boan/kvm/data/ubuntu"   # Needs meta-data, user-data, network-config file
 
 step_header "Ubuntu VM 생성"
 
-# ----- 1. VM 이름 -----
+# ----- 1. VM 이름 (같은 이름의 VM 이 있으면 기존 디스크를 덮어쓰게 되므로 여기서 차단) -----
 while true; do
 	ask_text "VM 이름" ""
-	if [ -n "${ASK_RESULT}" ]; then
-		break
+	if [ -z "${ASK_RESULT}" ]; then
+		log_warn "VM 이름은 필수입니다."
+		continue
 	fi
-	log_warn "VM 이름은 필수입니다."
+	if [[ ! "${ASK_RESULT}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+		log_warn "VM 이름은 영문/숫자로 시작하고 영문·숫자·'.'·'_'·'-' 만 사용할 수 있습니다. (디렉터리명과 도메인명에 그대로 사용됨)"
+		continue
+	fi
+	if sudo virsh -c qemu:///system dominfo "${ASK_RESULT}" >/dev/null 2>&1; then
+		log_warn "같은 이름의 VM 이 이미 존재합니다: ${ASK_RESULT}  (삭제: VM=${ASK_RESULT} ./delete_vm.sh)"
+		continue
+	fi
+	break
 done
 VM_NAME="${ASK_RESULT}"
 
@@ -145,11 +169,39 @@ if [ ! -f "${OS_IMG_PATH}" ]; then
 fi
 log_success "OS 이미지 확인: ${OS_IMG_PATH}"
 
+# 호스트 osinfo-db 가 이 os-variant 를 아는지 확인 (모르면 virt-install 이 "Unknown OS name" 으로 실패)
+if command -v virt-install >/dev/null 2>&1; then
+	if ! virt-install --osinfo list 2>/dev/null | grep -qx "${OS_VARIANT}"; then
+		log_error "이 호스트의 osinfo-db 가 '${OS_VARIANT}' 를 인식하지 못합니다."
+		log_info  "업데이트 후 재실행하세요:  sudo apt install -y osinfo-db   또는   sudo osinfo-db-import --latest"
+		exit 1
+	fi
+	log_success "os-variant 인식 확인: ${OS_VARIANT}"
+fi
+
+# 원본 이미지 가상 크기 → 디스크 크기 하한 (오버레이가 원본보다 작으면 qemu-img 가 거부)
+MIN_DISK_GB=""
+VIRTUAL_BYTES=$(sudo qemu-img info --output=json "${OS_IMG_PATH}" 2>/dev/null | grep -o '"virtual-size": *[0-9]*' | grep -o '[0-9]*$' || true)
+if [ -n "${VIRTUAL_BYTES}" ]; then
+	MIN_DISK_GB=$(( (VIRTUAL_BYTES + 1024*1024*1024 - 1) / (1024*1024*1024) ))
+fi
+
 # ----- 3~5. vCPU / RAM / 디스크 크기 -----
 echo
 ask_number "vCPU 수" "2";           VCPUS="${ASK_RESULT}"
 ask_number "메모리 (MB)" "2048";    RAM_SIZE="${ASK_RESULT}"
-ask_number "디스크 크기 (GB)" "128"; DISK_SIZE="${ASK_RESULT}"
+if [ -n "${MIN_DISK_GB}" ]; then
+	log_info "디스크 크기는 원본 이미지 가상 크기(${MIN_DISK_GB}GB) 이상이어야 합니다."
+fi
+while true; do
+	ask_number "디스크 크기 (GB)" "128"
+	if [ -n "${MIN_DISK_GB}" ] && [ "${ASK_RESULT}" -lt "${MIN_DISK_GB}" ]; then
+		log_warn "최소 ${MIN_DISK_GB}GB 이상 입력하세요."
+		continue
+	fi
+	break
+done
+DISK_SIZE="${ASK_RESULT}"
 
 # ----- 6. 디스크 타입 → 스토리지 풀 경로 -----
 echo
@@ -163,39 +215,54 @@ else
 fi
 log_success "디스크 타입: ${DISK_TYPE} → ${STORAGE_POOL_PATH}"
 
-# ----- 7. cloud-init 폴더 -----
+# ----- 7. cloud-init 폴더 (meta-data / user-data / network-config 3개 파일 필수) -----
 echo
-ask_text "cloud-init 폴더 (meta-data / user-data / network-config)" "${DEFAULT_CLOUD_INIT_FOLDER_PATH}"
+while true; do
+	ask_text "cloud-init 폴더 (meta-data / user-data / network-config 포함)" ""
+	if [ -z "${ASK_RESULT}" ]; then
+		log_warn "cloud-init 폴더는 필수입니다."
+		continue
+	fi
+	if [ ! -d "${ASK_RESULT}" ]; then
+		log_warn "폴더가 없습니다: ${ASK_RESULT}"
+		continue
+	fi
+	MISSING=""
+	for f in meta-data user-data network-config; do
+		[ -f "${ASK_RESULT}/${f}" ] || MISSING="${MISSING} ${f}"
+	done
+	if [ -n "${MISSING}" ]; then
+		log_warn "폴더에 파일이 없습니다:${MISSING}"
+		continue
+	fi
+	break
+done
 CLOUD_INIT_FOLDER_PATH="${ASK_RESULT}"
+log_success "cloud-init 파일 확인: meta-data / user-data / network-config"
 
 # ----- 8. 네트워크 (libvirt 네트워크 목록에서 선택) -----
 echo
 mapfile -t NET_LIST < <(sudo virsh -c qemu:///system net-list --all --name 2>/dev/null | grep -v '^$' || true)
-NET_LABELS=()
-for net in "${NET_LIST[@]}"; do
-	NET_LABELS+=("${net}")
-done
-NET_LABELS+=("직접 입력")
+if [ "${#NET_LIST[@]}" -eq 0 ]; then
+	log_error "libvirt 네트워크가 없습니다. 먼저 네트워크를 정의하세요. (확인: sudo virsh net-list --all)"
+	exit 1
+fi
 log_info "네트워크를 선택하세요"
-select_menu "${NET_LABELS[@]}"
-if [ "${MENU_SELECTED}" -lt "${#NET_LIST[@]}" ]; then
-	NETWORK="${NET_LIST[$MENU_SELECTED]}"
-else
-	ask_text "libvirt 네트워크 이름" "br0-net"
-	NETWORK="${ASK_RESULT}"
-fi
+select_menu "${NET_LIST[@]}"
+NETWORK="${NET_LIST[$MENU_SELECTED]}"
 
-# ----- 9. virt-type -----
+# ----- 9. virt-type (/dev/kvm 이 있으면 kvm 을 기본으로) -----
 echo
-if [ -e /dev/kvm ]; then
-	KVM_NOTE="가속 사용 가능 (/dev/kvm 있음)"
-else
-	KVM_NOTE="가속 사용 불가 (/dev/kvm 없음)"
-fi
 log_info "virt-type 을 선택하세요"
-select_menu "$(printf '%-6s %s' "qemu" "소프트웨어 에뮬레이션 (기본)")" \
-            "$(printf '%-6s %s' "kvm" "${KVM_NOTE}")"
-if [ "${MENU_SELECTED}" -eq 0 ]; then VIRT_TYPE="qemu"; else VIRT_TYPE="kvm"; fi
+if [ -e /dev/kvm ]; then
+	select_menu "$(printf '%-6s %s' "kvm" "하드웨어 가속 (기본, /dev/kvm 있음)")" \
+	            "$(printf '%-6s %s' "qemu" "소프트웨어 에뮬레이션 (느림)")"
+	if [ "${MENU_SELECTED}" -eq 0 ]; then VIRT_TYPE="kvm"; else VIRT_TYPE="qemu"; fi
+else
+	select_menu "$(printf '%-6s %s' "qemu" "소프트웨어 에뮬레이션 (기본, /dev/kvm 없음 → 가속 불가)")" \
+	            "$(printf '%-6s %s' "kvm" "하드웨어 가속 — 이 호스트에서는 실패할 수 있음")"
+	if [ "${MENU_SELECTED}" -eq 0 ]; then VIRT_TYPE="qemu"; else VIRT_TYPE="kvm"; fi
+fi
 
 # ----- 요약 및 확인 -----
 echo
@@ -218,7 +285,12 @@ log_info "$(date '+%Y-%m-%d %H:%M:%S')"
 log_info "Host: $(hostname)"
 
 # sudo mkdir -p "/var/lib/libvirt/images/${VM_NAME}"
-sudo mkdir -p "${STORAGE_POOL_PATH}/${VM_NAME}"
+if [ ! -d "${STORAGE_POOL_PATH}/${VM_NAME}" ]; then
+	sudo mkdir -p "${STORAGE_POOL_PATH}/${VM_NAME}"
+	CREATED_VM_DIR="${STORAGE_POOL_PATH}/${VM_NAME}"
+else
+	log_warn "디렉터리가 이미 있습니다 (이전 실행 잔여물?): ${STORAGE_POOL_PATH}/${VM_NAME} — 실패해도 삭제하지 않습니다."
+fi
 
 # BASE_IMG_PATH="/var/lib/libvirt/images/${VM_NAME}/${VM_NAME}-base.qcow2"
 # SEED_PATH="/var/lib/libvirt/images/${VM_NAME}/${VM_NAME}-seed.img"
@@ -248,7 +320,7 @@ sudo cloud-localds -v --network-config="${CLOUD_INIT_BASE_PATH}/network-config" 
 step_header "Step 4/4: virt-install 로 VM 생성"
 sudo virt-install --connect qemu:///system \
 	--name "${VM_NAME}" \
-	--ram "${RAM_SIZE}" \
+	--memory "${RAM_SIZE}" \
 	--vcpus "${VCPUS}" \
 	--os-variant "${OS_VARIANT}" \
 	--disk path="${BASE_IMG_PATH}",device=disk \
@@ -258,4 +330,22 @@ sudo virt-install --connect qemu:///system \
 	--noautoconsole \
 	--virt-type "${VIRT_TYPE}"
 
+CREATED_VM_DIR=""
+
+# cloud-init 부팅이 끝나 IP 를 받을 때까지 대기 (최대 90초)
+log_info "VM 부팅 및 IP 할당 대기 중... (최대 90초)"
+VM_IP=""
+for _ in $(seq 1 18); do
+	VM_IP=$(sudo virsh -c qemu:///system domifaddr "${VM_NAME}" 2>/dev/null \
+		| awk '/ipv4/ {print $4}' | cut -d/ -f1 | head -n1 || true)
+	[ -n "${VM_IP}" ] && break
+	sleep 5
+done
+
 step_header "VM 생성이 완료되었습니다 (${VM_NAME})"
+if [ -n "${VM_IP}" ]; then
+	log_success "IP: ${VM_IP}"
+else
+	log_warn "아직 IP 가 확인되지 않았습니다. 잠시 후 확인하세요:  sudo virsh domifaddr ${VM_NAME}"
+fi
+log_info "콘솔 접속:  sudo virsh console ${VM_NAME}   (종료: Ctrl+])"
