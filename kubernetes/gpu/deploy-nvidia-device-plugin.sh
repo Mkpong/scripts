@@ -4,7 +4,7 @@
 # - GPU 노드에 label 부여 후 nvidia-device-plugin DaemonSet 배포
 # - nodeSelector 패치, GPU 리소스 등록 대기 및 검증
 #
-# 실행 방법: bash deploy_nvidia_device_plugin.sh --node <node-name> [--node <node-name> ...]
+# 실행 방법: bash deploy-nvidia-device-plugin.sh --node <node-name> [--node <node-name> ...]
 ###############################################################################
 
 set -e
@@ -39,15 +39,15 @@ NODES=()
 
 usage() {
 	cat <<'USAGE'
-사용법: ./deploy_nvidia_device_plugin.sh --node <node-name> [--node <node-name> ...]
+사용법: ./deploy-nvidia-device-plugin.sh --node <node-name> [--node <node-name> ...]
 
 옵션:
   --node <name>    label 을 부여하고 plugin 을 배포할 GPU 노드 (반복 지정 가능, 필수)
   -h, --help       도움말 출력
 
 예시:
-  ./deploy_nvidia_device_plugin.sh --node dku-mlops-worker
-  ./deploy_nvidia_device_plugin.sh --node worker1 --node worker2
+  ./deploy-nvidia-device-plugin.sh --node dku-mlops-worker
+  ./deploy-nvidia-device-plugin.sh --node worker1 --node worker2
 USAGE
 }
 

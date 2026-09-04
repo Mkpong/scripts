@@ -89,7 +89,7 @@ if [ ! -t 0 ]; then
 fi
 for cmd in ip netplan virsh python3; do
 	if ! command -v "$cmd" >/dev/null 2>&1; then
-		log_error "'$cmd' 명령을 찾을 수 없습니다. install_kvm.sh 를 먼저 실행하세요."
+		log_error "'$cmd' 명령을 찾을 수 없습니다. install-kvm.sh 를 먼저 실행하세요."
 		exit 1
 	fi
 done
@@ -335,4 +335,4 @@ if [ -n "${GW_CHECK}" ]; then
 fi
 
 step_header "모든 설정이 완료되었습니다"
-log_info "VM 생성 시 네트워크에서 '${NETNAME}' 을 선택하세요.  (create_ubuntu_vm.sh)"
+log_info "VM 생성 시 네트워크에서 '${NETNAME}' 을 선택하세요.  (create-ubuntu-vm.sh)"

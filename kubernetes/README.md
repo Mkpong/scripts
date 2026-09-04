@@ -10,7 +10,7 @@ Ubuntu 노드에 kubeadm 기반 클러스터를 구성하는 스크립트 모음
 | `install-kubeadm.sh` | **모든 노드** | kubeadm / kubelet / kubectl 설치, swap 해제, 커널 모듈·sysctl 설정 |
 | `initialize-kubeadm.sh` | control-plane | `kubeadm init`, kubeconfig 설정, 단일 노드면 control-plane taint 제거 |
 | `deploy-cni.sh` | control-plane | pod 네트워크(CNI) 배포 |
-| `gpu/deploy_nvidia_device_plugin.sh` | control-plane | GPU 노드에 label 부여 후 NVIDIA device plugin 배포 |
+| `gpu/deploy-nvidia-device-plugin.sh` | control-plane | GPU 노드에 label 부여 후 NVIDIA device plugin 배포 |
 
 ## 사용 순서
 
@@ -38,7 +38,7 @@ sudo kubeadm join <위에서 출력된 명령>
 ### GPU 노드가 있을 때
 워커에서 NVIDIA driver + `../nvidia/install-nvidia-container-toolkit.sh` 설치 후, control-plane 에서:
 ```bash
-./gpu/deploy_nvidia_device_plugin.sh --node <gpu-node-name> [--node ...]
+./gpu/deploy-nvidia-device-plugin.sh --node <gpu-node-name> [--node ...]
 ```
 
 ## 옵션 (환경변수)

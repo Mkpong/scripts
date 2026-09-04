@@ -4,7 +4,7 @@
 # - Ubuntu cloud image 를 backing file 로 qcow2 디스크 생성
 # - cloud-init seed 이미지 생성 후 virt-install 로 VM 정의 및 기동
 #
-# 실행 방법: bash create_ubuntu_vm.sh   → 항목을 차례로 입력/선택 (터미널 필요)
+# 실행 방법: bash create-ubuntu-vm.sh   → 항목을 차례로 입력/선택 (터미널 필요)
 #   VM 이름 / OS 버전 / vCPU / RAM / 디스크 크기 / 디스크 타입 / cloud-init(호스트명·IP·계정) / 네트워크 / virt-type
 #
 # 주의
@@ -146,7 +146,7 @@ while true; do
 		continue
 	fi
 	if sudo virsh -c qemu:///system dominfo "${ASK_RESULT}" >/dev/null 2>&1; then
-		log_warn "같은 이름의 VM 이 이미 존재합니다: ${ASK_RESULT}  (삭제: VM=${ASK_RESULT} ./delete_vm.sh)"
+		log_warn "같은 이름의 VM 이 이미 존재합니다: ${ASK_RESULT}  (삭제: ./delete-vm.sh)"
 		continue
 	fi
 	break
