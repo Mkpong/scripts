@@ -109,6 +109,18 @@ ask_number() {
 	done
 }
 
+# ----- 스토리지 경로 상태 조사 -----
+# 사용: probe_pool_path <경로>  → PROBE_MOUNT(마운트포인트) / PROBE_SOURCE(장치) / PROBE_AVAIL_H(여유, 사람용) / PROBE_AVAIL_GB
+# 경로가 아직 없으면 존재하는 가장 가까운 상위 디렉터리를 기준으로 조사
+probe_pool_path() {
+	local path="$1" base="$1"
+	while [ ! -d "${base}" ] && [ "${base}" != "/" ]; do base="$(dirname "${base}")"; done
+	PROBE_MOUNT=$(findmnt -n -o TARGET --target "${base}" 2>/dev/null || echo "/")
+	PROBE_SOURCE=$(findmnt -n -o SOURCE --target "${base}" 2>/dev/null | sed 's|^/dev/||' || true)
+	PROBE_AVAIL_H=$(df -h --output=avail "${base}" 2>/dev/null | tail -n1 | tr -d ' ' || true)
+	PROBE_AVAIL_GB=$(df -BG --output=avail "${base}" 2>/dev/null | tail -n1 | tr -dc '0-9' || true)
+}
+
 # ----- 사전 점검 -----
 if [ ! -t 0 ]; then
 	log_error "이 스크립트는 터미널에서 실행해야 합니다. (항목을 메뉴에서 선택)"
@@ -223,16 +235,45 @@ done
 DISK_SIZE="${ASK_RESULT}"
 
 # ----- 6. 디스크 타입 → 스토리지 풀 경로 -----
+# ssd: 루트 FS 의 libvirt 기본 경로. hdd: 별도 디스크가 마운트되어 있어야 함 (호스트에서 fstab 으로 미리 준비)
 echo
-log_info "디스크 타입을 선택하세요"
-select_menu "$(printf '%-6s %s' "ssd" "${SSD_POOL_PATH}")" \
-            "$(printf '%-6s %s' "hdd" "${HDD_POOL_PATH}")"
-if [ "${MENU_SELECTED}" -eq 0 ]; then
-	DISK_TYPE="ssd"; STORAGE_POOL_PATH="${SSD_POOL_PATH}"
+probe_pool_path "${SSD_POOL_PATH}"
+SSD_LABEL=$(printf '%-6s %-26s 여유 %-7s (%s)' "ssd" "${SSD_POOL_PATH}" "${PROBE_AVAIL_H:-?}" "${PROBE_SOURCE:-?}")
+SSD_AVAIL_GB="${PROBE_AVAIL_GB}"
+
+probe_pool_path "${HDD_POOL_PATH}"
+HDD_MOUNTED=1
+if [ "${PROBE_MOUNT}" = "/" ]; then
+	HDD_MOUNTED=0
+	HDD_LABEL=$(printf '%-6s %-26s 마운트 안 됨 — 선택 불가' "hdd" "${HDD_POOL_PATH}")
 else
-	DISK_TYPE="hdd"; STORAGE_POOL_PATH="${HDD_POOL_PATH}"
+	HDD_LABEL=$(printf '%-6s %-26s 여유 %-7s (%s, %s)' "hdd" "${HDD_POOL_PATH}" "${PROBE_AVAIL_H:-?}" "${PROBE_SOURCE:-?}" "${PROBE_MOUNT}")
 fi
+HDD_AVAIL_GB="${PROBE_AVAIL_GB}"
+
+log_info "디스크 타입을 선택하세요"
+while true; do
+	select_menu "${SSD_LABEL}" "${HDD_LABEL}"
+	if [ "${MENU_SELECTED}" -eq 0 ]; then
+		DISK_TYPE="ssd"; STORAGE_POOL_PATH="${SSD_POOL_PATH}"; POOL_AVAIL_GB="${SSD_AVAIL_GB}"
+		break
+	fi
+	if [ "${HDD_MOUNTED}" -eq 0 ]; then
+		log_warn "${HDD_POOL_PATH} 가 속한 파일시스템이 루트(/)입니다. HDD 가 마운트되지 않았습니다."
+		log_info "확인: findmnt $(dirname "${HDD_POOL_PATH}")   /   마운트: sudo mount -a (fstab 등록 필요)"
+		continue
+	fi
+	DISK_TYPE="hdd"; STORAGE_POOL_PATH="${HDD_POOL_PATH}"; POOL_AVAIL_GB="${HDD_AVAIL_GB}"
+	if [ ! -d "${HDD_POOL_PATH}" ]; then
+		sudo mkdir -p "${HDD_POOL_PATH}"
+		log_info "디렉터리 생성: ${HDD_POOL_PATH}"
+	fi
+	break
+done
 log_success "디스크 타입: ${DISK_TYPE} → ${STORAGE_POOL_PATH}"
+if [ -n "${POOL_AVAIL_GB}" ] && [ "${DISK_SIZE}" -gt "${POOL_AVAIL_GB}" ]; then
+	log_warn "디스크 크기(${DISK_SIZE}GB)가 현재 여유 공간(${POOL_AVAIL_GB}GB)보다 큽니다. qcow2 는 사용한 만큼만 차지하지만 나중에 공간 부족이 날 수 있습니다."
+fi
 
 # ----- 7. cloud-init 폴더 (meta-data / user-data / network-config 3개 파일 필수) -----
 echo
@@ -351,20 +392,19 @@ sudo virt-install --connect qemu:///system \
 
 CREATED_VM_DIR=""
 
-# cloud-init 부팅이 끝나 IP 를 받을 때까지 대기 (최대 90초)
-log_info "VM 부팅 및 IP 할당 대기 중... (최대 90초)"
-VM_IP=""
-for _ in $(seq 1 18); do
-	VM_IP=$(sudo virsh -c qemu:///system domifaddr "${VM_NAME}" 2>/dev/null \
-		| awk '/ipv4/ {print $4}' | cut -d/ -f1 | head -n1 || true)
-	[ -n "${VM_IP}" ] && break
-	sleep 5
+# VM 이 running 상태가 될 때까지 대기 (최대 30초). IP 는 cloud-init 고정 설정이므로 조회하지 않음
+log_info "VM 기동 대기 중..."
+VM_STATE=""
+for _ in $(seq 1 30); do
+	VM_STATE=$(sudo virsh -c qemu:///system domstate "${VM_NAME}" 2>/dev/null || true)
+	[ "${VM_STATE}" = "running" ] && break
+	sleep 1
 done
 
 step_header "VM 생성이 완료되었습니다 (${VM_NAME})"
-if [ -n "${VM_IP}" ]; then
-	log_success "IP: ${VM_IP}"
+if [ "${VM_STATE}" = "running" ]; then
+	log_success "VM 실행 중 (cloud-init 초기 설정은 부팅 후 1~2분 더 걸릴 수 있음)"
 else
-	log_warn "아직 IP 가 확인되지 않았습니다. 잠시 후 확인하세요:  sudo virsh domifaddr ${VM_NAME}"
+	log_warn "VM 상태가 running 이 아닙니다: ${VM_STATE:-unknown}   확인: sudo virsh domstate ${VM_NAME}"
 fi
 log_info "콘솔 접속:  sudo virsh console ${VM_NAME}   (종료: Ctrl+])"
