@@ -5,10 +5,11 @@
 # - cloud-init seed 이미지 생성 후 virt-install 로 VM 정의 및 기동
 #
 # 실행 방법: bash create_ubuntu_vm.sh   → 항목을 차례로 입력/선택 (터미널 필요)
-#   VM 이름 / OS 버전 / vCPU / RAM / 디스크 크기 / 디스크 타입 / cloud-init 폴더 / 네트워크 / virt-type
+#   VM 이름 / OS 버전 / vCPU / RAM / 디스크 크기 / 디스크 타입 / cloud-init(호스트명·IP·계정) / 네트워크 / virt-type
 #
 # 주의
-# - cloud-init 폴더는 VM 마다 별도로 준비 (meta-data 의 호스트명, network-config 의 IP 가 들어 있으므로 공용 사용 금지)
+# - cloud-init 파일(meta-data / user-data / network-config)은 입력값으로 VM 디렉터리에 직접 생성함
+#   (user-data 에 비밀번호가 평문으로 들어가므로 600 권한, VM 디렉터리는 root 소유)
 # - VM 디스크는 /var/lib/libvirt/images 의 원본 cloud image 를 backing file 로 참조함.
 #   원본을 삭제/교체하면 그 이미지로 만든 VM 전부가 손상되므로 원본은 건드리지 말 것
 ###############################################################################
@@ -275,30 +276,50 @@ if [ -n "${POOL_AVAIL_GB}" ] && [ "${DISK_SIZE}" -gt "${POOL_AVAIL_GB}" ]; then
 	log_warn "디스크 크기(${DISK_SIZE}GB)가 현재 여유 공간(${POOL_AVAIL_GB}GB)보다 큽니다. qcow2 는 사용한 만큼만 차지하지만 나중에 공간 부족이 날 수 있습니다."
 fi
 
-# ----- 7. cloud-init 폴더 (meta-data / user-data / network-config 3개 파일 필수) -----
+# ----- 7. cloud-init 정보 (VM 디렉터리에 meta-data / user-data / network-config 생성) -----
 echo
-while true; do
-	ask_text "cloud-init 폴더 (meta-data / user-data / network-config 포함)" ""
-	if [ -z "${ASK_RESULT}" ]; then
-		log_warn "cloud-init 폴더는 필수입니다."
-		continue
-	fi
-	if [ ! -d "${ASK_RESULT}" ]; then
-		log_warn "폴더가 없습니다: ${ASK_RESULT}"
-		continue
-	fi
-	MISSING=""
-	for f in meta-data user-data network-config; do
-		[ -f "${ASK_RESULT}/${f}" ] || MISSING="${MISSING} ${f}"
+log_info "cloud-init 설정 (게스트 OS 초기화)"
+ask_text "게스트 호스트명" "${VM_NAME}";  CI_HOSTNAME="${ASK_RESULT}"
+
+log_info "게스트 IP 설정 방식을 선택하세요"
+select_menu "고정 IP" "DHCP"
+if [ "${MENU_SELECTED}" -eq 0 ]; then
+	CI_IP_MODE="static"
+	while true; do
+		ask_text "게스트 IP (CIDR, 예: 10.10.0.198/24)" ""
+		[[ "${ASK_RESULT}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] && break
+		log_warn "형식: a.b.c.d/prefix"
 	done
-	if [ -n "${MISSING}" ]; then
-		log_warn "폴더에 파일이 없습니다:${MISSING}"
-		continue
-	fi
+	CI_ADDR="${ASK_RESULT}"
+	GW_DEFAULT="$(echo "${CI_ADDR%%/*}" | awk -F. '{print $1"."$2"."$3".1"}')"
+	ask_text "게이트웨이" "${GW_DEFAULT}";  CI_GW="${ASK_RESULT}"
+	ask_text "DNS (공백 구분)" "8.8.8.8";   CI_DNS="${ASK_RESULT}"
+else
+	CI_IP_MODE="dhcp"
+fi
+# virt-install 기본(q35 + virtio-net)에서 게스트 NIC 이름은 enp1s0
+ask_text "게스트 NIC 이름" "enp1s0";  CI_NIC="${ASK_RESULT}"
+
+echo
+ask_text "게스트 계정" "${USER}";  CI_USER="${ASK_RESULT}"
+while true; do
+	read -rsp "$(echo -e "${BLUE}[INFO]${NC} 게스트 비밀번호: ")" CI_PASS; echo
+	read -rsp "$(echo -e "${BLUE}[INFO]${NC} 비밀번호 확인: ")" CI_PASS2; echo
+	if [ -z "${CI_PASS}" ]; then log_warn "비밀번호는 비울 수 없습니다."; continue; fi
+	if [ "${CI_PASS}" != "${CI_PASS2}" ]; then log_warn "비밀번호가 일치하지 않습니다."; continue; fi
 	break
 done
-CLOUD_INIT_FOLDER_PATH="${ASK_RESULT}"
-log_success "cloud-init 파일 확인: meta-data / user-data / network-config"
+SSHKEY_DEFAULT=""
+for k in ~/.ssh/id_ed25519.pub ~/.ssh/id_rsa.pub; do [ -f "$k" ] && { SSHKEY_DEFAULT="$k"; break; }; done
+ask_text "SSH 공개키 파일 (없으면 빈 값)" "${SSHKEY_DEFAULT}";  CI_SSHKEY_FILE="${ASK_RESULT}"
+CI_SSHKEY=""
+if [ -n "${CI_SSHKEY_FILE}" ]; then
+	if [ ! -f "${CI_SSHKEY_FILE}" ]; then
+		log_warn "공개키 파일이 없어 건너뜁니다: ${CI_SSHKEY_FILE}"
+	else
+		CI_SSHKEY="$(head -n1 "${CI_SSHKEY_FILE}")"
+	fi
+fi
 
 # ----- 8. 네트워크 (libvirt 네트워크 목록에서 선택) -----
 echo
@@ -331,7 +352,13 @@ log_info "  VM 이름       : ${VM_NAME}"
 log_info "  OS            : ${OS_VARIANT}"
 log_info "  vCPU / RAM    : ${VCPUS} / ${RAM_SIZE}MB"
 log_info "  디스크        : ${DISK_SIZE}GB (${DISK_TYPE}) → ${STORAGE_POOL_PATH}/${VM_NAME}"
-log_info "  cloud-init    : ${CLOUD_INIT_FOLDER_PATH}"
+log_info "  호스트명      : ${CI_HOSTNAME}"
+if [ "${CI_IP_MODE}" = "static" ]; then
+	log_info "  게스트 IP     : ${CI_ADDR}  gw ${CI_GW}  dns ${CI_DNS}  (${CI_NIC})"
+else
+	log_info "  게스트 IP     : DHCP (${CI_NIC})"
+fi
+log_info "  게스트 계정   : ${CI_USER}$([ -n "${CI_SSHKEY}" ] && echo '  + SSH 공개키')"
 log_info "  네트워크      : ${NETWORK}"
 log_info "  virt-type     : ${VIRT_TYPE}"
 read -rp "$(echo -e "${BLUE}[INFO]${NC} 계속할까요? [Y/n] ")" CONFIRM
@@ -359,9 +386,58 @@ BASE_IMG_PATH="${STORAGE_POOL_PATH}/${VM_NAME}/${VM_NAME}-base.qcow2"
 SEED_PATH="${STORAGE_POOL_PATH}/${VM_NAME}/${VM_NAME}-seed.img"
 CLOUD_INIT_BASE_PATH="${STORAGE_POOL_PATH}/${VM_NAME}"
 
-step_header "Step 1/4: cloud-init 파일 복사"
-# copy cloud-init folder
-sudo cp "${CLOUD_INIT_FOLDER_PATH}"/* "${CLOUD_INIT_BASE_PATH}"
+step_header "Step 1/4: cloud-init 파일 생성"
+# meta-data
+printf 'local-hostname: %s\n' "${CI_HOSTNAME}" | sudo tee "${CLOUD_INIT_BASE_PATH}/meta-data" > /dev/null
+
+# network-config (v2)
+{
+	echo "ethernets:"
+	echo "  ${CI_NIC}:"
+	if [ "${CI_IP_MODE}" = "static" ]; then
+		echo "    addresses:"
+		echo "    - ${CI_ADDR}"
+		echo "    dhcp4: no"
+		echo "    gateway4: ${CI_GW}"
+		echo "    nameservers:"
+		echo "      addresses:"
+		for d in ${CI_DNS}; do echo "      - ${d}"; done
+	else
+		echo "    dhcp4: yes"
+	fi
+	echo "version: 2"
+} | sudo tee "${CLOUD_INIT_BASE_PATH}/network-config" > /dev/null
+
+# user-data (비밀번호 평문 포함 → 600)
+{
+	echo "#cloud-config"
+	echo "hostname: ${CI_HOSTNAME}"
+	echo "manage_etc_hosts: true"
+	echo "users:"
+	echo "  - name: ${CI_USER}"
+	echo "    sudo: ALL=(ALL) NOPASSWD:ALL"
+	echo "    groups: users, admin"
+	echo "    home: /home/${CI_USER}"
+	echo "    shell: /bin/bash"
+	echo "    lock_passwd: false"
+	echo "    ssh_genkeytypes: ['rsa', 'ed25519']"
+	if [ -n "${CI_SSHKEY}" ]; then
+		echo "    ssh_authorized_keys:"
+		echo "      - ${CI_SSHKEY}"
+	else
+		echo "    ssh_authorized_keys: []"
+	fi
+	echo "ssh_pwauth: true"
+	echo "chpasswd:"
+	echo "  list: |"
+	echo "    ${CI_USER}:${CI_PASS}"
+	echo "  expire: false"
+	echo ""
+	echo "runcmd:"
+	echo "  - systemctl restart ssh"
+} | sudo tee "${CLOUD_INIT_BASE_PATH}/user-data" > /dev/null
+sudo chmod 600 "${CLOUD_INIT_BASE_PATH}/user-data"
+log_success "생성: ${CLOUD_INIT_BASE_PATH}/{meta-data,network-config,user-data}"
 
 step_header "Step 2/4: base 이미지 생성"
 # create base image
