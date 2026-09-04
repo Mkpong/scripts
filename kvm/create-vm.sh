@@ -4,7 +4,7 @@
 # - Ubuntu cloud image 를 backing file 로 qcow2 디스크 생성
 # - cloud-init seed 이미지 생성 후 virt-install 로 VM 정의 및 기동
 #
-# 실행 방법: bash create-ubuntu-vm.sh   → 항목을 차례로 입력/선택 (터미널 필요)
+# 실행 방법: bash create-vm.sh   → 항목을 차례로 입력/선택 (터미널 필요)
 #   VM 이름 / OS 버전 / vCPU / RAM / 디스크 크기 / 디스크 타입 / cloud-init(호스트명·IP·계정) / 네트워크 / virt-type
 #
 # 주의

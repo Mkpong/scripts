@@ -335,4 +335,4 @@ if [ -n "${GW_CHECK}" ]; then
 fi
 
 step_header "모든 설정이 완료되었습니다"
-log_info "VM 생성 시 네트워크에서 '${NETNAME}' 을 선택하세요.  (create-ubuntu-vm.sh)"
+log_info "VM 생성 시 네트워크에서 '${NETNAME}' 을 선택하세요.  (create-vm.sh)"

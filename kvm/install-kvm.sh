@@ -79,9 +79,9 @@ else
 	if [ ! -e /dev/kvm ]; then
 		log_error "- /dev/kvm 이 없습니다."
 	fi
-	log_info "이 경우 create-ubuntu-vm.sh 에서 virt-type 을 qemu 로 선택하세요 (느림)."
+	log_info "이 경우 create-vm.sh 에서 virt-type 을 qemu 로 선택하세요 (느림)."
 fi
 
 step_header "모든 설치 및 설정이 완료되었습니다"
 log_info "다음 단계: VM 을 LAN 에 직접 연결하려면 './setup-bridge-network.sh' 로 브리지 네트워크를 만드세요."
-log_info "          NAT 로 충분하면 create-ubuntu-vm.sh 에서 'default' 네트워크를 선택하면 됩니다."
+log_info "          NAT 로 충분하면 create-vm.sh 에서 'default' 네트워크를 선택하면 됩니다."
