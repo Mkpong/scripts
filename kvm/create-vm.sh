@@ -212,9 +212,17 @@ if command -v virt-install >/dev/null 2>&1; then
 fi
 
 # 원본 이미지 가상 크기 → 디스크 크기 하한 (오버레이가 원본보다 작으면 qemu-img 가 거부)
+# qemu 8.x 부터 JSON 에 children[].info 의 virtual-size(파일 크기)가 함께 나오므로
+# 최상위 virtual-size 만 골라야 한다 (grep 으로는 두 값이 잡힘)
 MIN_DISK_GB=""
-VIRTUAL_BYTES=$(sudo qemu-img info --output=json "${OS_IMG_PATH}" 2>/dev/null | grep -o '"virtual-size": *[0-9]*' | grep -o '[0-9]*$' || true)
-if [ -n "${VIRTUAL_BYTES}" ]; then
+VIRTUAL_BYTES=$(sudo qemu-img info --output=json "${OS_IMG_PATH}" 2>/dev/null \
+	| python3 -c 'import sys, json; print(json.load(sys.stdin)["virtual-size"])' 2>/dev/null || true)
+if [ -z "${VIRTUAL_BYTES}" ]; then
+	# python3 가 없거나 JSON 파싱 실패 시: 사람이 읽는 출력에서 "virtual size: 3.5 GiB (3758096384 bytes)"
+	VIRTUAL_BYTES=$(sudo qemu-img info "${OS_IMG_PATH}" 2>/dev/null \
+		| sed -nE 's/^virtual size:.*\(([0-9]+) bytes\).*/\1/p' | head -n1 || true)
+fi
+if [[ "${VIRTUAL_BYTES}" =~ ^[0-9]+$ ]]; then
 	MIN_DISK_GB=$(( (VIRTUAL_BYTES + 1024*1024*1024 - 1) / (1024*1024*1024) ))
 fi
 
